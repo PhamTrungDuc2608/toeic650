@@ -100,14 +100,15 @@ function loadVoices() {
   const sel = $("#voiceSel"); if (sel) fillVoiceSel(sel);
 }
 function fillVoiceSel(sel) {
+  if (window.AUDIDX && Object.keys(window.AUDIDX).length) { sel.innerHTML = `<option>Giọng thu sẵn: nữ Mỹ · nam Mỹ · nam Anh</option>`; sel.disabled = true; return; }
   sel.innerHTML = voices.length ? voices.map((v,i) => `<option value="${i}">${esc(v.name)} · ${esc(v.lang)}</option>`).join("") : `<option>Giọng mặc định</option>`;
   if (S.voice != null && S.voice < voices.length) sel.value = S.voice;
 }
 if (synth) { loadVoices(); synth.onvoiceschanged = loadVoices; }
 const vMain = () => voices[S.voice ?? 0] || voices[0] || null;
 const vOther = (m, skip) => voices.find(v => v !== m && v !== skip && v.lang === (m && m.lang)) || voices.find(v => v !== m && v !== skip) || m;
-function speak(items, rate) {
-  if (!synth) { toast("Trình duyệt này không đọc được giọng nói."); return; }
+function ttsSpeak(items, rate) {
+  if (!synth || !voices.length) return false;
   synth.cancel();
   const W = vMain(), M = vOther(W), M2 = vOther(W, M);
   let i = 0;
@@ -122,10 +123,61 @@ function speak(items, rate) {
     u.onend = () => setTimeout(next, it.pause ?? 350);
     synth.speak(u);
   };
-  next();
+  next(); return true;
+}
+/* --- recorded audio (audio-*.js packs) --- */
+const VW = { W:"af_heart", M:"am_michael", M2:"bm_george" };
+const AIDX = window.AUDIDX || {}; window.AUDP = window.AUDP || {};
+const HAS_REC = Object.keys(AIDX).length > 0;
+const packLoads = {};
+function loadPack(p) {
+  if (window.AUDP[p]) return Promise.resolve();
+  if (packLoads[p]) return packLoads[p];
+  packLoads[p] = new Promise(res => { const sc = document.createElement("script"); sc.src = "audio-" + p + ".js"; sc.onload = () => res(); sc.onerror = () => { delete packLoads[p]; res(); }; document.head.appendChild(sc); });
+  return packLoads[p];
+}
+function clipFor(text, who) {
+  const t = String(text).trim();
+  for (const k of [(VW[who] || "af_heart") + "|" + t, "af_heart|" + t, "am_michael|" + t]) if (k in AIDX) return { k, p:AIDX[k] };
+  return null;
+}
+const player = new Audio(); player.preload = "auto";
+const SILENT = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYwLjE2LjEwMAAAAAAAAAAAAAAA//OEwAAAAAAAAAAAAEluZm8AAAAPAAAABwAAA2AAVVVVVVVVVVVVVVVVVVVxcXFxcXFxcXFxcXFxcY6Ojo6Ojo6Ojo6Ojo6Oqqqqqqqqqqqqqqqqqqqqx8fHx8fHx8fHx8fHx8fj4+Pj4+Pj4+Pj4+Pj4///////////////////AAAAAExhdmM2MC4zMQAAAAAAAAAAAAAAACQEIAAAAAAAAANgmVBi7QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//NExAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExFMAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKYAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKwAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV";
+let seqId = 0, audioBusy = false, unlocked = false;
+const unlock = () => { if (unlocked) return; unlocked = true; try { player.src = SILENT; const pr = player.play(); if (pr) pr.catch(() => { unlocked = false; }); } catch (e) { unlocked = false; } };
+addEventListener("pointerdown", unlock, true); addEventListener("keydown", unlock, true);
+function playClip(src, rate) {
+  return new Promise(res => {
+    player.onended = player.onerror = () => res(true);
+    player.src = src; player.playbackRate = rate; try { player.preservesPitch = true; player.webkitPreservesPitch = true; } catch (e) {}
+    const pr = player.play(); if (pr) pr.catch(() => res(false));
+  });
+}
+async function speak(items, rate) {
+  stopSpeech();
+  const id = ++seqId; rate = rate || S.rate;
+  const list = items.map(it => ({ it, c: clipFor(it.text, it.who) }));
+  if (list.some(x => !x.c)) {
+    if (ttsSpeak(items, rate)) return;
+    if (list.every(x => !x.c)) { toast("Chưa có âm thanh cho mục này."); return; }
+  }
+  await Promise.all([...new Set(list.filter(x => x.c).map(x => x.c.p))].map(loadPack));
+  if (id !== seqId) return;
+  audioBusy = true;
+  for (const x of list) {
+    if (id !== seqId) break;
+    if (!x.c) continue;
+    const b64 = (window.AUDP[x.c.p] || {})[x.c.k];
+    if (!b64) continue;
+    const ok = await playClip("data:audio/mpeg;base64," + b64, rate);
+    if (!ok) { if (id === seqId) toast("Chạm nút ▶ để nghe."); break; }
+    if (id !== seqId) break;
+    await new Promise(r => setTimeout(r, x.it.pause ?? 300));
+  }
+  if (id === seqId) audioBusy = false;
 }
 const say = (t, r) => speak([{ text:t }], r);
-const stopSpeech = () => synth && synth.cancel();
+const stopSpeech = () => { seqId++; audioBusy = false; try { player.pause(); } catch (e) {} if (synth) synth.cancel(); };
 
 /* ---------------- time tracking ---------------- */
 let lastAct = Date.now();
@@ -133,7 +185,7 @@ let lastAct = Date.now();
 let tick = 0;
 setInterval(() => {
   if (document.hidden || !SES || SES.done) return;
-  if (Date.now() - lastAct < 90000 || (synth && synth.speaking)) {
+  if (Date.now() - lastAct < 90000 || audioBusy || (synth && synth.speaking)) {
     today().sec += 5; tick++;
     if (tick % 6 === 0) save();
   }
@@ -368,7 +420,7 @@ const RENDER = {
   p1(b, u, ans) {
     b.innerHTML = tagRow("Part 1", u.lv === "a" ? "700+" : null) + `<div class="scene"><div class="scene-k">Ảnh mô tả</div><p>${esc(u.scene)}</p></div>`;
     const m = mcqBlock({ ...u, stem:"" }, ans, { hidden:true, noStem:true, after:() => { m.el.querySelector(".fb").insertAdjacentHTML("beforeend", trBlock(u.opts[u.a], u.tr)); } });
-    const p = playerEl(() => m.order.map((oi, k) => ({ text:`${LET[k]}. ${u.opts[oi]}`, pause:700 })), { label:"Nghe 4 câu mô tả", sub:"Chọn câu đúng với bức ảnh" });
+    const p = playerEl(() => m.order.map((oi, k) => [{ text:LET[k] + ".", pause:120 }, { text:u.opts[oi], pause:700 }]).flat(), { label:"Nghe 4 câu mô tả", sub:"Chọn câu đúng với bức ảnh" });
     b.appendChild(p); b.appendChild(m.el); autoplay(p);
   },
   p2(b, u, ans) {
@@ -379,7 +431,7 @@ const RENDER = {
       holder.innerHTML = `<div class="tr tapline"><p><span class="sp">Q</span><span class="tl-en">${tapHTML(u.q)}</span></p>${tr[0] ? `<p class="vi-line">${esc(tr[0])}</p>` : ""}</div>`;
       m.el.querySelector(".fb").insertAdjacentHTML("beforeend", trBlock(u.opts[u.a], tr[1], "Đáp án đúng"));
     } });
-    const p = playerEl(() => [{ text:u.q, who:"W", pause:900 }, ...m.order.map((oi, k) => ({ text:`${LET[k]}. ${u.opts[oi]}`, who:"M", pause:650 }))], { label:"Nghe câu hỏi và 3 đáp án", sub:"Không có chữ, giống đề thật" });
+    const p = playerEl(() => [{ text:u.q, who:"W", pause:900 }, ...m.order.map((oi, k) => [{ text:LET[k] + ".", who:"M", pause:120 }, { text:u.opts[oi], who:"M", pause:650 }]).flat()], { label:"Nghe câu hỏi và 3 đáp án", sub:"Không có chữ, giống đề thật" });
     b.appendChild(p); b.appendChild(holder); b.appendChild(m.el); autoplay(p);
   },
   set(b, u, ans) {
@@ -940,7 +992,8 @@ let rzT, lastW = innerWidth;
 addEventListener("resize", () => { clearTimeout(rzT); rzT = setTimeout(() => { if (Math.abs(innerWidth - lastW) > 40 && !SES && (S.view === "home" || S.view === "progress")) { lastW = innerWidth; render(); } }, 250); });
 $$(".nav-btn").forEach(b => b.onclick = () => go(b.dataset.v));
 $("#brandHome").onclick = () => go("home");
-if (!synth) setTimeout(() => toast("Trình duyệt không hỗ trợ đọc giọng nói — phần nghe sẽ không có âm thanh."), 800);
+if (!HAS_REC && !synth) setTimeout(() => toast("Trình duyệt không hỗ trợ đọc giọng nói — phần nghe sẽ không có âm thanh."), 800);
+if (HAS_REC) setTimeout(() => { const ric = window.requestIdleCallback || (f => setTimeout(f, 1500)); ric(() => ["l","c","d","v","p"].reduce((pr, p) => pr.then(() => loadPack(p)), Promise.resolve())); }, 2500);
 render();
 window.__t650 = { U, POOL, S };
 })();
